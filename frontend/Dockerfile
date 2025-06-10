@@ -1,12 +1,12 @@
-FROM node:18-alpine
+FROM node:18-alpine as builder
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install --production
+# Install all dependencies (including devDependencies for build)
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -14,8 +14,16 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Install serve to run the built app
+# Production stage
+FROM node:18-alpine as production
+
+WORKDIR /app
+
+# Install serve globally
 RUN npm install -g serve
+
+# Copy built application from builder stage
+COPY --from=builder /app/dist ./dist
 
 EXPOSE 3000
 
