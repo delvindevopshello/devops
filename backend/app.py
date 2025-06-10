@@ -10,6 +10,8 @@ import boto3
 from botocore.exceptions import ClientError
 import json
 import logging
+import time
+import sys
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -26,25 +28,78 @@ db = SQLAlchemy(app)
 jwt = JWTManager(app)
 CORS(app)
 
-# Redis connection
-redis_client = redis.Redis(
-    host=os.getenv('REDIS_HOST', 'localhost'),
-    port=int(os.getenv('REDIS_PORT', 6379)),
-    db=0,
-    decode_responses=True
-)
-
-# AWS SES client
-ses_client = boto3.client(
-    'ses',
-    region_name=os.getenv('AWS_REGION', 'us-east-1'),
-    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
-)
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def wait_for_db():
+    """Wait for database to be available"""
+    max_retries = 30
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            # Test database connection
+            db.session.execute('SELECT 1')
+            logger.info("Database connection successful")
+            return True
+        except Exception as e:
+            retry_count += 1
+            logger.warning(f"Database connection attempt {retry_count}/{max_retries} failed: {str(e)}")
+            if retry_count < max_retries:
+                time.sleep(2)
+            else:
+                logger.error("Failed to connect to database after maximum retries")
+                return False
+
+def wait_for_redis():
+    """Wait for Redis to be available"""
+    max_retries = 30
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            redis_client = redis.Redis(
+                host=os.getenv('REDIS_HOST', 'localhost'),
+                port=int(os.getenv('REDIS_PORT', 6379)),
+                db=0,
+                decode_responses=True
+            )
+            redis_client.ping()
+            logger.info("Redis connection successful")
+            return redis_client
+        except Exception as e:
+            retry_count += 1
+            logger.warning(f"Redis connection attempt {retry_count}/{max_retries} failed: {str(e)}")
+            if retry_count < max_retries:
+                time.sleep(2)
+            else:
+                logger.error("Failed to connect to Redis after maximum retries")
+                return None
+
+# Wait for dependencies
+logger.info("Waiting for database...")
+if not wait_for_db():
+    logger.error("Could not connect to database. Exiting.")
+    sys.exit(1)
+
+logger.info("Waiting for Redis...")
+redis_client = wait_for_redis()
+if not redis_client:
+    logger.warning("Could not connect to Redis. Continuing without Redis.")
+    redis_client = None
+
+# AWS SES client (optional)
+try:
+    ses_client = boto3.client(
+        'ses',
+        region_name=os.getenv('AWS_REGION', 'us-east-1'),
+        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+    )
+except Exception as e:
+    logger.warning(f"AWS SES not configured: {str(e)}")
+    ses_client = None
 
 # Import models and routes
 from models import User, Job, Application
@@ -67,12 +122,19 @@ def health_check():
         db.session.execute('SELECT 1')
         
         # Test Redis connection
-        redis_client.ping()
+        redis_status = 'connected'
+        if redis_client:
+            try:
+                redis_client.ping()
+            except:
+                redis_status = 'disconnected'
+        else:
+            redis_status = 'not_configured'
         
         return jsonify({
             'status': 'healthy',
             'database': 'connected',
-            'redis': 'connected',
+            'redis': redis_status,
             'timestamp': datetime.utcnow().isoformat()
         }), 200
     except Exception as e:
@@ -106,20 +168,25 @@ def missing_token_callback(error):
 
 if __name__ == '__main__':
     with app.app_context():
+        # Create tables
         db.create_all()
         
         # Create admin user if it doesn't exist
-        admin_user = User.query.filter_by(email='admin@devopsjobs.com').first()
-        if not admin_user:
-            admin_user = User(
-                email='admin@devopsjobs.com',
-                password_hash=generate_password_hash('admin123'),
-                first_name='Admin',
-                last_name='User',
-                role='admin'
-            )
-            db.session.add(admin_user)
-            db.session.commit()
-            logger.info("Admin user created")
+        try:
+            admin_user = User.query.filter_by(email='admin@devopsjobs.com').first()
+            if not admin_user:
+                admin_user = User(
+                    email='admin@devopsjobs.com',
+                    password_hash=generate_password_hash('admin123'),
+                    first_name='Admin',
+                    last_name='User',
+                    role='admin'
+                )
+                db.session.add(admin_user)
+                db.session.commit()
+                logger.info("Admin user created")
+        except Exception as e:
+            logger.error(f"Failed to create admin user: {str(e)}")
     
+    logger.info("Starting Flask application...")
     app.run(debug=True, host='0.0.0.0', port=5000)
