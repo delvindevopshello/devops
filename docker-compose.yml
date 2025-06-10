@@ -50,7 +50,7 @@ services:
     container_name: devops_jobs_backend
     environment:
       - DATABASE_URL=mysql+pymysql://appuser:apppassword@mysql:3306/devops_jobs
-      - REDIS_HOST=mysql
+      - REDIS_HOST=redis
       - REDIS_PORT=6379
       - SECRET_KEY=your-secret-key-change-in-production
       - JWT_SECRET_KEY=your-jwt-secret-key-change-in-production

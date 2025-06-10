@@ -13,6 +13,10 @@ import logging
 import time
 import sys
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Initialize Flask app
 app = Flask(__name__)
 
@@ -28,29 +32,27 @@ db = SQLAlchemy(app)
 jwt = JWTManager(app)
 CORS(app)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 def wait_for_db():
     """Wait for database to be available"""
     max_retries = 30
     retry_count = 0
     
-    while retry_count < max_retries:
-        try:
-            # Test database connection
-            db.session.execute('SELECT 1')
-            logger.info("Database connection successful")
-            return True
-        except Exception as e:
-            retry_count += 1
-            logger.warning(f"Database connection attempt {retry_count}/{max_retries} failed: {str(e)}")
-            if retry_count < max_retries:
-                time.sleep(2)
-            else:
-                logger.error("Failed to connect to database after maximum retries")
-                return False
+    with app.app_context():
+        while retry_count < max_retries:
+            try:
+                # Test database connection
+                db.session.execute('SELECT 1')
+                db.session.commit()
+                logger.info("Database connection successful")
+                return True
+            except Exception as e:
+                retry_count += 1
+                logger.warning(f"Database connection attempt {retry_count}/{max_retries} failed: {str(e)}")
+                if retry_count < max_retries:
+                    time.sleep(2)
+                else:
+                    logger.error("Failed to connect to database after maximum retries")
+                    return False
 
 def wait_for_redis():
     """Wait for Redis to be available"""
@@ -77,18 +79,6 @@ def wait_for_redis():
                 logger.error("Failed to connect to Redis after maximum retries")
                 return None
 
-# Wait for dependencies
-logger.info("Waiting for database...")
-if not wait_for_db():
-    logger.error("Could not connect to database. Exiting.")
-    sys.exit(1)
-
-logger.info("Waiting for Redis...")
-redis_client = wait_for_redis()
-if not redis_client:
-    logger.warning("Could not connect to Redis. Continuing without Redis.")
-    redis_client = None
-
 # AWS SES client (optional)
 try:
     ses_client = boto3.client(
@@ -97,6 +87,7 @@ try:
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
     )
+    logger.info("AWS SES client initialized")
 except Exception as e:
     logger.warning(f"AWS SES not configured: {str(e)}")
     ses_client = None
@@ -123,7 +114,7 @@ def health_check():
         
         # Test Redis connection
         redis_status = 'connected'
-        if redis_client:
+        if 'redis_client' in globals() and redis_client:
             try:
                 redis_client.ping()
             except:
@@ -166,13 +157,31 @@ def invalid_token_callback(error):
 def missing_token_callback(error):
     return jsonify({'message': 'Authorization token is required'}), 401
 
-if __name__ == '__main__':
+def initialize_app():
+    """Initialize the application with proper setup"""
+    logger.info("Initializing application...")
+    
+    # Wait for dependencies
+    logger.info("Waiting for database...")
+    if not wait_for_db():
+        logger.error("Could not connect to database. Exiting.")
+        sys.exit(1)
+
+    logger.info("Waiting for Redis...")
+    global redis_client
+    redis_client = wait_for_redis()
+    if not redis_client:
+        logger.warning("Could not connect to Redis. Continuing without Redis.")
+        redis_client = None
+
+    # Create tables and initial data
     with app.app_context():
-        # Create tables
-        db.create_all()
-        
-        # Create admin user if it doesn't exist
         try:
+            # Create tables
+            db.create_all()
+            logger.info("Database tables created successfully")
+            
+            # Create admin user if it doesn't exist
             admin_user = User.query.filter_by(email='admin@devopsjobs.com').first()
             if not admin_user:
                 admin_user = User(
@@ -184,9 +193,17 @@ if __name__ == '__main__':
                 )
                 db.session.add(admin_user)
                 db.session.commit()
-                logger.info("Admin user created")
+                logger.info("Admin user created successfully")
+            else:
+                logger.info("Admin user already exists")
+                
         except Exception as e:
-            logger.error(f"Failed to create admin user: {str(e)}")
+            logger.error(f"Failed to initialize database: {str(e)}")
+            sys.exit(1)
     
+    logger.info("Application initialization completed successfully")
+
+if __name__ == '__main__':
+    initialize_app()
     logger.info("Starting Flask application...")
     app.run(debug=True, host='0.0.0.0', port=5000)
