@@ -230,7 +230,7 @@ def delete_job(job_id):
         
     except Exception as e:
         logger.error(f"Delete job error: {str(e)}")
-        db.session.roll back()
+        db.session.rollback()
         return jsonify({'message': 'Failed to delete job'}), 500
 
 @jobs_bp.route('/<int:job_id>/apply', methods=['POST'])
